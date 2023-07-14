@@ -1,4 +1,15 @@
+import os
+import json
+from os import path
 from typing import Optional, Callable, Tuple
+from functools import partial
+
+from PIL import Image
+
+try:
+    from tqdm import tqdm
+except ImportError:
+    tqdm = lambda x, *a, **k: x
 
 
 class TextOCRForTextDetection:
@@ -60,6 +71,9 @@ class TextOCRForTextDetection:
         self.transform = transform
         self.use_polygon = use_polygon
 
+    def get_image_name(self, idx):
+        return self.index[idx]
+
     def __len__(self):
         return len(self.imgs)
 
@@ -107,3 +121,63 @@ class TextOCRForTextDetection:
             return self.transform(img, boxes)
         else:
             return img, boxes
+
+
+def transform_labelme(img, boxes, use_polygon: bool = False):
+    # Base annotation
+    w, h = img.size
+    labelme = {
+        "version": "5.2.0",
+        "flags": {},
+        "shapes": [],
+        "imagePath": None,
+        "imageData": None,
+        "imageHeight": w,
+        "imageWidth": h,
+    }
+
+    # Box annotations
+    for box in boxes:
+        # Denormalize
+        points = [
+            [
+                int(box[i * 2] * w),
+                int(box[i * 2 + 1] * h),
+            ]
+            for i in range(len(box) // 2)
+        ]
+
+        # Labelme shape
+        shape = {}
+        shape["label"] = "text"
+        shape["group_id"] = None
+        shape["flags"] = {}
+        shape["points"] = points
+        if use_polygon:
+            shape["shape_type"] = "polygon"
+        else:
+            shape["shape_type"] = "rectangle"
+        labelme["shapes"].append(shape)
+
+    return img, labelme
+
+
+def write_labelme(root, dataset: TextOCRForTextDetection):
+    os.makedirs(root)
+    dataset.transform = partial(transform_labelme, use_polygon=dataset.use_polygon)
+    for i, (image, ann) in tqdm(
+        enumerate(dataset),
+        "Creating dataset",
+        total=len(dataset),
+    ):
+        # Paths
+        name = dataset.get_image_name(i)
+        image_path = path.join(root, name + ".jpeg")
+        json_path = path.join(root, name + ".json")
+        ann["imagePath"] = path.basename(image_path)
+
+        # Write annotations and image to dist
+        image.save(image_path, "JPEG", quality=100)
+        with open(json_path, "w") as f:
+            data = json.dumps(ann, indent=4, ensure_ascii=False)
+            f.write(data)
